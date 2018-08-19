@@ -41,6 +41,50 @@ class DB:
         for alias in aliases: self.__create_new_alias(name, alias)
         self.commit()
 
+    def update_member(self, name, **info):
+        if "rename" in info:
+            self.c.execute("UPDATE details SET name=? WHERE name=?", (info[rename], name))
+        if "section" in info:
+            self.c.execute("UPDATE details SET section=? WHERE name=?", (info[section], name))
+        if "contact" in info:
+            self.c.execute("UPDATE details SET contact=? WHERE name=?", (info[contact], name))
+        if "status" in info:
+            self.c.execute("UPDATE details SET status=? WHERE name=?", (info[status], name))
+        self.commit()
+
+    def update_status(self, name, status): self.update_member(name, status=status)
+    def update_contact(self, name, contact): self.update_member(name, contact=contact)
+    def update_section(self, name, section): self.update_member(name, section=section)
+    def update_name(self, name, rename): self.update_member(name, rename=rename)
+    
+    def delete_member(self, name):
+        assert confirm_delete()
+
+        att_headers = self.get_table_headers("attendance")
+        if name not in att_headers:
+            print("{} not found.".format(name))
+            return
+
+        # Remove from attendance table (col)
+        att_headers.remove(name)
+        att_args = str(att_headers)[1:-1] # Argument form
+        self.c.execute("CREATE TEMPORARY TABLE attendance_backup({})".format(att_args))
+        self.c.execute("INSERT INTO attendance_backup SELECT {} FROM attendance".format(att_args))
+        self.c.execute("DROP TABLE attendance")
+        self.c.execute("CREATE TABLE attendance({})".format(att_args))
+        self.c.execute("INSERT INTO attendance SELECT {} FROM attendance_backup".format(att_args))
+        self.c.execute("DROP TABLE attendance_backup")
+
+        # Remove from details table (row)
+        self.c.execute("DELETE FROM details WHERE name='{}'".format(name))
+
+        # Remove from alias data
+        for key in list(self.aliases.keys()):
+            if self.aliases[key] == name:
+                del self.aliases[key]
+        self.commit()
+        self.restart()
+    
     def __create_new_alias(self, name, *aliases):
         for alias in aliases:
             alias = alias.replace(" ", "").lower()
@@ -66,8 +110,7 @@ class DB:
                 print("{} not found.".format(alias))
         self.commit()
         self.restart() # Simple BKTree initialisation
-
-    
+        
     ### QUERY TOOLS ###
 
     def __match_alias(self, query):
@@ -94,6 +137,10 @@ class DB:
     
 
     ### DEBUGGING TOOLS ###
+
+    def get_table_headers(self, database):
+        self.c.execute("SELECT * FROM {}".format(database))
+        return list(next(zip(*self.c.description)))
         
     def print(self, database=None):
         if database in ("details", "attendance"):
@@ -124,8 +171,7 @@ class DB:
                 json.dump({}, f)
 
     def hard_reset(self):
-        usr = input("WARNING! Deleting database... Type 'deleteme' to confirm: ")
-        if usr != "deleteme": return
+        assert confirm_delete()
         
         self.c.execute("DROP TABLE IF EXISTS details")
         self.c.execute("DROP TABLE IF EXISTS attendance")
@@ -133,6 +179,9 @@ class DB:
             os.remove("aliases.json")
         self.initialise()
         self.restart()
+
+def confirm_delete():
+    return input("WARNING! Deleting data... Type 'deleteme' to confirm: ") == "deleteme"
 
 if __name__ == "__main__":
     db = DB()
