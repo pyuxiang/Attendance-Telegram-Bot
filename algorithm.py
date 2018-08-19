@@ -219,6 +219,15 @@ class DB:
         self.c.execute("DELETE FROM attendance WHERE date=?", (dts.to_datestr(),))
         self.commit()
 
+    def get_session_time(self, dts):
+        self.c.execute("SELECT time FROM attendance WHERE data=?", (dts.to_date_str(),))
+        time_ary = self.c.fetchone()
+        if time_ary is None:
+            print("Practice does not exist!")
+            return
+        dts.add_timestr(time_ary[0])
+        return dts
+
 
     ### UPDATE ATTENDANCE ###
 
