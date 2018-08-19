@@ -43,20 +43,33 @@ class DB:
 
     def update_member(self, name, **info):
         if "rename" in info:
-            self.c.execute("UPDATE details SET name=? WHERE name=?", (info[rename], name))
+            self.c.execute("UPDATE details SET name=? WHERE name=?", (info["rename"], name))
         if "section" in info:
-            self.c.execute("UPDATE details SET section=? WHERE name=?", (info[section], name))
+            self.c.execute("UPDATE details SET section=? WHERE name=?", (info["section"], name))
         if "contact" in info:
-            self.c.execute("UPDATE details SET contact=? WHERE name=?", (info[contact], name))
+            self.c.execute("UPDATE details SET contact=? WHERE name=?", (info["contact"], name))
         if "status" in info:
-            self.c.execute("UPDATE details SET status=? WHERE name=?", (info[status], name))
+            self.c.execute("UPDATE details SET status=? WHERE name=?", (info["status"], name))
         self.commit()
 
     def update_status(self, name, status): self.update_member(name, status=status)
     def update_contact(self, name, contact): self.update_member(name, contact=contact)
     def update_section(self, name, section): self.update_member(name, section=section)
-    def update_name(self, name, rename): self.update_member(name, rename=rename)
-    
+    def update_name(self, name, rename, *aliases):
+        self.update_member(name, rename=rename)
+        
+        # Remove existing alias listings
+        for key in list(self.aliases.keys()):
+            if self.aliases[key] == name:
+                del self.aliases[key]
+
+        # New alias listings
+        name = rename
+        self.__create_new_alias(name, name)
+        for alias in aliases: self.__create_new_alias(name, alias)
+        self.commit()
+        self.restart()
+
     def delete_member(self, name):
         assert confirm_delete()
 
