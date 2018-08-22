@@ -2,8 +2,6 @@
 # rather than letting it fail after passing to backend
 # ALL CONVERSION PUT IN FRONTEND!!!!
 # - to rename alias to nickname
-# - to remove chat_id references in methods
-# - to shift all result strings to be returned by backend
 
 # Needed for packaged modules if main.py run from parent directory
 # https://chrisyeh96.github.io/2017/08/08/definitive-guide-python-imports.html
@@ -28,7 +26,7 @@ class SIGINT_handler():
 def main():
     handler = SIGINT_handler()
     signal.signal(signal.SIGINT, handler.handler)
-    bot = TeleBot(True)
+    bot = TeleBot()
     
     while True:
         if handler.SIGINT: break
@@ -127,7 +125,7 @@ class TeleBot:
         return 'Format: `/<cmd> <arguments>`\n'\
              + 'For arguments with whitespace, enclose within "".\n'\
              + 'For more help, type `/<cmd>` and follow the prompts.\n\n'\
-             + 'Possible cmds:\n`new`, `edit`, `delete`, `setdate`,\n'\
+             + 'Possible cmds:\n`new`, `edit`, `delete`, `set`, `now`,\n'\
              + '`add`, `present`, `late`, `absent(all)`, `report`'
             
     def hello(self):
@@ -136,7 +134,9 @@ class TeleBot:
     def prompt_qualifier(f):
         def wrapper(*args, **kwargs):
             if len(args) == 1:
-                return "Please specify a qualifier, e.g. `/{} <qualifier>`".format(f.__name__)
+                text = "Please specify a qualifier, e.g. `/{} <qualifier>`\n".format(f.__name__)
+                if f.__name__ in ("new","delete"): text += "where qualifier = `member/alias/practice`"
+                if f.__name__ == "edit": text += "where qualifier = `name/section/contact/status`"
             r = f(*args, **kwargs)
             return r
         return wrapper
@@ -213,14 +213,19 @@ class TeleBot:
         return "No such qualifier '{}' available.\nUse: `/edit <name/section/contact/status>`".format(qualifier)
 
                 
-    ### FUNCTIONS BELOW ASSUME DATE HAS ALREADY BEEN SET VIA setdate ###
+    ### FUNCTIONS BELOW ASSUME DATE HAS ALREADY BEEN SET VIA set ###
 
-    def setdate(self, *args):
+    def now(self, *args):
+        day = algorithm.DT(self.cur_date).day_of_week()
+        return "Current date is `{}, {}`.".format(day, self.cur_date)
+    
+    def set(self, *args):
         inputs = "<YYYY-MM-DD>"
-        assert_cmd("setdate", inputs, *args)
+        assert_cmd("set", inputs, *args)
         assert_date(args[0])
         self.cur_date = algorithm.DT(args[0]).to_date()
-        return "Current date is now set to {}.".format(args[0])
+        day = algorithm.DT(self.cur_date).day_of_week()
+        return "Current date is now set to `{}, {}`.".format(day, self.cur_date)
 
     def add(self, *args):
         inputs = "<alias>[,*<alias>]"
@@ -244,7 +249,7 @@ class TeleBot:
         assert_cmd("absent", inputs, *args)
         return self.db.set_absent(self.cur_date, *args)
 
-    def absentall(self):
+    def absentall(self, *args):
         return self.db.set_absent_all(self.cur_date)
         
     ### REPORT GENERATION ###

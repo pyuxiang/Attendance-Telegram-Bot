@@ -23,6 +23,12 @@ class DT:
     def to_date(self): return "{:04d}-{:02d}-{:02d}".format(self.y, self.m, self.d)
     def to_time(self): return "{:02d}:{:02d}".format(self.h, self.min)
     def to_dt(self): return datetime.datetime(self.y, self.m, self.d, self.h, self.min)
+    def day_of_week(self):
+        t = [0,3,2,5,0,3,5,1,4,6,2,4]
+        y = self.y - (self.m < 3)
+        idx = (y + y//4 - y//100 + y//400 + t[self.m-1] + self.d) % 7
+        return ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday",
+                "Friday", "Saturday"][idx]
 
 # only usable for backend testing
 def confirm_delete():
@@ -229,7 +235,7 @@ class DB:
         self.c.execute("SELECT * FROM attendance WHERE date=?", (date,))
         if self.c.fetchone() is None:
             return "{} practice not found.".format(date)
-        self.c.execute("UPDATE attendance SET '{}'='{}' WHERE date='{}'".format(name, text, dts.to_datestr()))
+        self.c.execute("UPDATE attendance SET '{}'='{}' WHERE date='{}'".format(name, text, date))
         self.commit()
         return "{} marked as {}.".format(name, text)
 
@@ -284,7 +290,7 @@ class DB:
         att_list = {}
         if section != ".":
             section_members = self.get_list_of_section_members(section)
-        for i in range(2, len(att_result)):
+        for i in range(3, len(att_result)):
             if section != "." and att_namelist[i] not in section_members: continue
             if mode == "absent" and att_result[i] != None: continue
             if mode == "reason" and att_result[i] not in ("late", "absent"): continue
@@ -326,14 +332,15 @@ class DB:
         elif database == "alias":
             print(self.aliases)
         else:
+            result = "--------------------\n"
             for database in ("details", "attendance"):
                 self.c.execute("SELECT * FROM {}".format(database))
-                print(next(zip(*self.c.description)))
-                for row in self.c: print(row)
-                print()
-            print(self.aliases)
-            print("--------------------")
-        return ""
+                result += str(next(zip(*self.c.description))) + "\n"
+                for row in self.c: result += str(row) + "\n"
+                result += "\n"
+            result += str(self.aliases) + "\n"
+            result += "--------------------"
+        return result
                        
 
 if __name__ == "__main__":
