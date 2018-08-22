@@ -19,15 +19,15 @@ def assert_cmd(cmd, inputs, *args):
     op_argc = count_optional_args(inputs)
     if op_argc == -1:
         assert len(args) >= argc,\
-               "Expected at least {} entries instead of {},\nFormat: /{} {}"\
+               "Expected at least {} entries instead of {},\nFormat: `/{} {}`"\
                .format(argc, len(args), cmd, inputs)
     elif op_argc == 0:
         assert len(args) == argc,\
-               "Expected {} entries instead of {},\nFormat: /{} {}"\
+               "Expected {} entries instead of {},\nFormat: `/{} {}`"\
                .format(argc, len(args), cmd, inputs)
     else:
         assert len(args) in (argc, argc + op_argc),\
-               "Expected {} entries instead of {},\nFormat: /{} {}"\
+               "Expected {} entries instead of {},\nFormat: `/{} {}`"\
                .format(argc if argc > len(args) else argc + op_argc, len(args), cmd, inputs)
 
 # Member information

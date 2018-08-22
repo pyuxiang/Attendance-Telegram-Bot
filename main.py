@@ -28,7 +28,7 @@ class SIGINT_handler():
 def main():
     handler = SIGINT_handler()
     signal.signal(signal.SIGINT, handler.handler)
-    bot = TeleBot()
+    bot = TeleBot(True)
     
     while True:
         if handler.SIGINT: break
@@ -57,7 +57,7 @@ class TeleBot:
         from unit_tests import abstractDB
         self.failviolently = failviolently
         self.token = constants.TOKEN
-        self.db = abstractDB()
+        self.db = algorithm.DB()
         self.url = "https://api.telegram.org/bot{}/".format(self.token)
         
         self.next_offset = None
@@ -65,7 +65,7 @@ class TeleBot:
         self.active_chats = set()
         self.start_time = datetime.datetime.now()
 
-        self.cur_date = datetime.datetime.now()
+        self.cur_date = algorithm.DT(datetime.datetime.now()).to_date()
 
     def terminate(self):
         uptime = datetime.datetime.now() - self.start_time
@@ -112,7 +112,7 @@ class TeleBot:
                 if "@" in cmd: cmd = cmd.split("@")[0] # ignore calls such as /new@bot
                 try:
                     assert hasattr(self, cmd), "/{} does not exist.".format(cmd)
-                    response = getattr(self, cmd)(chat_id, *args)
+                    response = getattr(self, cmd)(*args)
                     self.send_message(chat_id, response)
                 except AssertionError as e:
                     self.send_message(chat_id, str(e))
@@ -123,26 +123,26 @@ class TeleBot:
                     
     ### COMMANDS ###
 
-    def help(self, chat_id):
+    def help(self):
         return 'Format: `/<cmd> <arguments>`\n'\
              + 'For arguments with whitespace, enclose within "".\n'\
              + 'For more help, type `/<cmd>` and follow the prompts.\n\n'\
              + 'Possible cmds:\n`new`, `edit`, `delete`, `setdate`,\n'\
              + '`add`, `present`, `late`, `absent(all)`, `report`'
             
-    def hello(self, chat_id):
+    def hello(self):
         return "Hello World! :)"
 
     def prompt_qualifier(f):
         def wrapper(*args, **kwargs):
-            if len(args) == 2:
-                return "Please specify a qualifier, e.g. /{} <qualifier>".format(f.__name__)
+            if len(args) == 1:
+                return "Please specify a qualifier, e.g. `/{} <qualifier>`".format(f.__name__)
             r = f(*args, **kwargs)
             return r
         return wrapper
 
     @prompt_qualifier
-    def new(self, chat_id, qualifier, *args):
+    def new(self, qualifier, *args):
         
         if qualifier == "member":
             inputs = "member <fullname> <section> <contact> <status>[,*<alias>]"
@@ -162,10 +162,10 @@ class TeleBot:
             assert_datetime(args[0], args[1])
             return self.db.add_session(*args)
         
-        return "No such qualifier '{}' available.\nUse: /new <member/alias/practice>".format(qualifier)
+        return "No such qualifier '{}' available.\nUse: `/new <member/alias/practice>`".format(qualifier)
                 
     @prompt_qualifier         
-    def delete(self, chat_id, qualifier, *args):
+    def delete(self, qualifier, *args):
                 
         if qualifier == "member":
             inputs = "member <fullname>"
@@ -175,7 +175,7 @@ class TeleBot:
         if qualifier == "alias":
             inputs = "alias <alias>[,*<alias>]"
             assert_cmd("delete", inputs, qualifier, *args)
-            return self.db.delete_alias(*args)
+            return "\n".join(map(lambda s: self.db.delete_alias(self, s), args))
                 
         if qualifier == "practice":
             inputs = "practice <YYYY-MM-DD>"
@@ -183,10 +183,10 @@ class TeleBot:
             assert_date(*args)
             return self.db.delete_session(*args)
 
-        return "No such qualifier '{}' available.\nUse: /new <member/alias/practice>".format(qualifier)
+        return "No such qualifier '{}' available.\nUse: `/delete <member/alias/practice>`".format(qualifier)
 
     @prompt_qualifier
-    def edit(self, chat_id, qualifier, *args):
+    def edit(self, qualifier, *args):
                 
         if qualifier == "name":
             inputs = "name <oldname> <newname>[,*<alias>]"
@@ -210,46 +210,46 @@ class TeleBot:
             assert_cmd("edit", inputs, qualifier, *args)
             return self.db.update_status(*args)
 
-        return "No such qualifier '{}' available.\nUse: /new <member/alias/practice>".format(qualifier)
+        return "No such qualifier '{}' available.\nUse: `/edit <name/section/contact/status>`".format(qualifier)
 
                 
     ### FUNCTIONS BELOW ASSUME DATE HAS ALREADY BEEN SET VIA setdate ###
 
-    def setdate(self, chat_id, *args):
+    def setdate(self, *args):
         inputs = "<YYYY-MM-DD>"
         assert_cmd("setdate", inputs, *args)
         assert_date(args[0])
-        self.cur_date = args[0]
+        self.cur_date = algorithm.DT(args[0]).to_date()
         return "Current date is now set to {}.".format(args[0])
 
-    def add(self, chat_id, *args):
+    def add(self, *args):
         inputs = "<alias>[,*<alias>]"
         assert_cmd("add", inputs, *args)
-        if datetime.datetime.now() < self.db.parse_to_dt(self.cur_date):
-            return self.present(self, chat_id, *args)
-        return "\n".join(map(lambda s: self.late(self, chat_id, s), args))
+        if datetime.datetime.now() < self.db.get_session_dt(self.cur_date):
+            return self.present(*args)
+        return "\n".join(map(lambda s: self.late(s), args))
 
-    def present(self, chat_id, *args): # TODO: need to accept only valid args and highlight invalid ones
+    def present(self, *args):
         inputs = "<alias>[,*<alias>]"
         assert_cmd("present", inputs, *args)
-        return self.db.set_present(self.cur_date, *args)
+        return "\n".join(map(lambda s: self.db.set_present(self.cur_date, s), args))
 
-    def late(self, chat_id, *args):
+    def late(self, *args):
         inputs = "<alias>[,<reason>]"
         assert_cmd("late", inputs, *args)              
         return self.db.set_late(self.cur_date, *args)
 
-    def absent(self, chat_id, *args):
+    def absent(self, *args):
         inputs = "<alias>[,<reason>]"
         assert_cmd("absent", inputs, *args)
         return self.db.set_absent(self.cur_date, *args)
 
-    def absentall(self, chat_id):
+    def absentall(self):
         return self.db.set_absent_all(self.cur_date)
         
     ### REPORT GENERATION ###
 
-    def report(self, chat_id, section=".", *args):
+    def report(self, section=".", *args):
         inputs = "<section=.>[,<mode=/reason/absent/section>]"
         assert_cmd("report", inputs, section, *args)
         if section != ".": assert_section(section)
@@ -258,7 +258,10 @@ class TeleBot:
         if mode == "reason": return self.db.get_no_reason_report(self.cur_date, section)
         if mode == "absent": return self.db.get_not_present_report(self.cur_date, section)
         if mode == "section": return self.db.get_section_members(section)
-        return "No such mode '{}' available.\nUse: /report <section=.>[,<mode=/reason/absent/section>]".format(mode)
+        return "No such mode '{}' available.\nUse: `/report <section=.>[,<mode=/reason/absent/section>]`".format(mode)
+
+    def print(self):
+        return self.db.print()
                 
 if __name__ == "__main__":
     main()

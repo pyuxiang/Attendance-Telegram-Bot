@@ -36,6 +36,7 @@ class BKTree:
         cur_node.add_child(dist, word)
 
     def search(self, word, d=2):
+        if self.root is None: return [] # empty tree
         word = word.lower()
         candidates = []
         self.recursive_search(self.root, candidates, word, d)

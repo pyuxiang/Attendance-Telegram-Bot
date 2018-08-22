@@ -55,12 +55,14 @@ class DB:
                             status TEXT) """)
         self.c.execute(""" CREATE TABLE IF NOT EXISTS attendance
                            (date TEXT,
-                            time TEXT) """)
+                            time TEXT,
+                            sessiontype TEXT) """)
         if not os.path.isfile("aliases.json"):
             with open("aliases.json", "w") as f:
                 json.dump({}, f)
 
     def hard_reset(self):
+        assert confirm_delete()
         self.c.execute("DROP TABLE IF EXISTS details")
         self.c.execute("DROP TABLE IF EXISTS attendance")
         if os.path.isfile("aliases.json"):
@@ -76,7 +78,7 @@ class DB:
         # Check duplicate names
         self.c.execute("SELECT * FROM details WHERE name=?", (name,))
         if self.c.fetchone() is not None:
-            return "Duplicate member found!"
+            return "{} already exists.".format(name)
         self.c.execute(""" INSERT INTO details (name, section, contact, status)
                            VALUES (?,?,?,?) """, (name, section.upper(), contact, status))
         self.c.execute("ALTER TABLE attendance ADD COLUMN '{}' TEXT".format(name))
@@ -85,8 +87,13 @@ class DB:
         self.__create_new_alias(name, name)
         for alias in aliases: self.__create_new_alias(name, alias)
         self.commit()
+        return "{} added.".format(name)
 
     def update_member(self, name, **info):
+        att_headers = self.get_table_headers("attendance")
+        if name not in att_headers:
+            return "{} not found.".format(name)
+        
         if "rename" in info:
             self.c.execute("UPDATE details SET name=? WHERE name=?", (info["rename"], name))
         if "section" in info:
@@ -96,12 +103,13 @@ class DB:
         if "status" in info:
             self.c.execute("UPDATE details SET status=? WHERE name=?", (info["status"], name))
         self.commit()
+        return "{} updated.".format(name)
 
-    def update_status(self, name, status): self.update_member(name, status=status)
-    def update_contact(self, name, contact): self.update_member(name, contact=contact)
-    def update_section(self, name, section): self.update_member(name, section=section.upper())
+    def update_status(self, name, status): return self.update_member(name, status=status)
+    def update_contact(self, name, contact): return self.update_member(name, contact=contact)
+    def update_section(self, name, section): return self.update_member(name, section=section.upper())
     def update_name(self, name, rename, *aliases):
-        self.update_member(name, rename=rename)
+        r = self.update_member(name, rename=rename)
         
         # Remove existing alias listings
         for key in list(self.aliases.keys()):
@@ -114,14 +122,12 @@ class DB:
         for alias in aliases: self.__create_new_alias(name, alias)
         self.commit()
         self.restart()
+        return r
 
     def delete_member(self, name):
-        assert confirm_delete()
-
         att_headers = self.get_table_headers("attendance")
         if name not in att_headers:
-            print("{} not found.".format(name))
-            return
+            return "{} not found.".format(name)
 
         # Remove from attendance table (col)
         att_headers.remove(name)
@@ -142,6 +148,7 @@ class DB:
                 del self.aliases[key]
         self.commit()
         self.restart()
+        return "{} deleted.".format(name)
     
     def __create_new_alias(self, name, *aliases):
         for alias in aliases:
@@ -150,126 +157,141 @@ class DB:
             self.alias_bktree.add(alias)
 
     def add_alias(self, target, *aliases):
-        # Check if target is existing alias to name
+        # TODO: Check if target is existing alias to name
         name = self.match_alias_to_name(target)
         if name == "":
-            print("No unique name found.")
-            return
+            return "{} cannot be found.".format(alias)
         self.__create_new_alias(name, *aliases)
         self.commit()
         self.restart()
+        return "Aliases {} added for {}.".format(aliases, name)
             
-    def delete_alias(self, *aliases):
-        for alias in aliases:
-            alias = alias.replace(" ", "").lower()
-            if alias in self.aliases:
-                del self.aliases[alias]
-            else:
-                print("{} not found.".format(alias))
-        self.commit()
-        self.restart() # Simple BKTree initialisation
+    def delete_alias(self, alias):
+        alias = alias.replace(" ", "").lower()
+        if alias in self.aliases:
+            del self.aliases[alias]
+            self.commit()
+            self.restart() # Simple BKTree initialisation
+            return "{} deleted.".format(alias)
+        else:
+            return "{} not found.".format(alias)
+        
 
 
     ### PRACTICES ###
 
-    def parse_date_as_dt(self, date):
-        return DT(date).to_dt()
-
-    def parse_dt_as_date(self, dt):
-        return DT(dt).to_date()
-
-    def get_session_dt(self, datestamp):
-        pass
-    
-    def add_session(self, datestamp, timestamp):
+    def add_session(self, date, time, sessiontype):
+        date = DT(date).to_date() # reparse
         # Works on assumption of only one practice session per day
-        if dts.to_timestr() == "00:00": # default value
-            print("Time must be specified!")
-            return
-        self.c.execute("SELECT * FROM attendance WHERE date=?", (dts.to_datestr(),))
+        self.c.execute("SELECT * FROM attendance WHERE date=?", (date,))
         if self.c.fetchone() is not None:
-            print("Duplicate practice entries!")
-            return
-        self.c.execute("INSERT INTO attendance (date, time) VALUES (?,?)",
-                        (dts.to_datestr(), dts.to_timestr()))
+            return "{} practice already exists.".format(date)
+        self.c.execute("INSERT INTO attendance (date, time, sessiontype) VALUES (?,?,?)",
+                        (date, time, sessiontype))
         self.commit()
+        return "{} {} {} practice created.".format(date, time, sessiontype)
 
-    def delete_session(self, dts):
-        assert confirm_delete()
-        self.c.execute("DELETE FROM attendance WHERE date=?", (dts.to_datestr(),))
+    def delete_session(self, date):
+        date = DT(date).to_date() # reparse
+        self.c.execute("SELECT * FROM attendance WHERE date=?", (date,))
+        if self.c.fetchone() is None:
+            return "{} practice not found.".format(date)
+        self.c.execute("DELETE FROM attendance WHERE date=?", (date,))
         self.commit()
+        return "{} practice deleted.".format(date)
 
-    def get_session_time(self, dts): #datetime input
-        self.c.execute("SELECT time FROM attendance WHERE data=?", (dts.to_date_str(),))
+    def get_session_time(self, date): # Not used
+        date = DT(date).to_date() # reparse
+        self.c.execute("SELECT time FROM attendance WHERE date=?", (date,))
         time_ary = self.c.fetchone()
         if time_ary is None:
-            print("Practice does not exist!")
-            return
-        dts.add_timestr(time_ary[0])
-        return dts
+            return "00:00"
+            return "{} practice does not exist.".format(date)
+        return time_ary[0]
+
+    def get_session_dt(self, date): # Watch out for difference in outputs
+        date = DT(date).to_date() # reparse
+        self.c.execute("SELECT time FROM attendance WHERE date=?", (date,))
+        time_ary = self.c.fetchone()
+        if time_ary is None:
+            return DT(date).to_dt()
+            return "{} practice does not exist!"
+        return DT(date, time_ary[0]).to_dt()
 
 
     ### UPDATE ATTENDANCE ###
 
-    def update_attendance(self, dts, alias, text):
+    def update_attendance(self, date, alias, text):
+        date = DT(date).to_date() # reparse
         name = self.match_alias_to_name(alias)
         if name == "":
-            print("{} cannot be matched.".format(alias))
-            return
+            return "{} not found.".format(alias)
+        self.c.execute("SELECT * FROM attendance WHERE date=?", (date,))
+        if self.c.fetchone() is None:
+            return "{} practice not found.".format(date)
         self.c.execute("UPDATE attendance SET '{}'='{}' WHERE date='{}'".format(name, text, dts.to_datestr()))
         self.commit()
+        return "{} marked as {}.".format(name, text)
 
-    def set_present(self, dts, *aliases):
-        for alias in aliases:
-            self.update_attendance(dts, alias, "present")
+    def set_present(self, date, alias):
+        date = DT(date).to_date() # reparse
+        return self.update_attendance(date, alias, "present")
 
-    def set_late(self, dts, alias, reason=""):
-        text = "late" + ((": " + reason) if reason != "" else "")
-        self.update_attendance(dts, alias, text)
+    def set_late(self, date, alias, reason=""):
+        date = DT(date).to_date() # reparse
+        text = "late" if reason == "" else ("late: " + reason)
+        return self.update_attendance(date, alias, text)
 
-    def set_absent(self, dts, alias, reason=""):
-        text = "absent" + ((": " + reason) if reason != "" else "")
-        self.update_attendance(dts, alias, text)
+    def set_absent(self, date, alias, reason=""):
+        date = DT(date).to_date() # reparse
+        text = "absent" if reason == "" else ("absent: " + reason)
+        return self.update_attendance(date, alias, text)
 
-    def set_absent_all(self, dts):
-        for member in list(self.get_unfilled_report(dts).keys()):
-            self.c.execute("UPDATE attendance SET '{}'='NOSHOW' WHERE date='{}'".format(member, dts.to_datestr()))
-            # @Problematic
-            # self.c.execute("UPDATE attendance SET '{}'='NOSHOW' WHERE '{}'=NULL, date='{}'".format(member, member, dts.to_datestr()))
+    def set_absent_all(self, date):
+        date = DT(date).to_date() # reparse
+        self.c.execute("SELECT * FROM attendance WHERE date=?", (date,))
+        if self.c.fetchone() is None:
+            return "{} practice not found.".format(date)
+        for member in list(self.get_not_present_report(date).keys()):
+            self.c.execute("UPDATE attendance SET '{}'='absent' WHERE date='{}'".format(member, date))
         self.commit()
+        return "Absence marked for {} practice.".format(date)
 
 
     ### GENERATE ATTENDANCE OVERVIEW ###
 
-    def get_no_late_reason_report(self, dts, section=None):
-        return self.get_report(dts, "nolatereason", section)
+    def get_section_members(self, section):
+        self.c.execute("SELECT name FROM details WHERE section LIKE '{}%'".format(section.upper()))
+        return str(list(map(lambda x: x[0], self.c.fetchall())))
 
-    def get_unfilled_report(self, dts, section=None):
-        return self.get_report(dts, "noshow", section)
+    def get_no_reason_report(self, date, section="."):
+        return self.get_report(date, "reason", section)
 
-    def get_full_report(self, dts, section=None):
-        return self.get_report(dts, None, section)
+    def get_not_present_report(self, date, section="."):
+        return self.get_report(date, "absent", section)
+
+    def get_full_report(self, date, section="."):
+        return self.get_report(date, "full", section)
         
-    def get_report(self, dts, mode=None, section=None):
-        self.c.execute("SELECT * FROM attendance WHERE date=?", (dts.to_datestr(),))
+    def get_report(self, date, mode="full", section="."):
+        date = DT(date).to_date() # reparse
+        self.c.execute("SELECT * FROM attendance WHERE date=?", (date,))
         att_result = self.c.fetchone()
         if att_result is None:
-            print("No practices on {}".format(dts.to_datestr()))
-            return
+            return "{} practice not found.".format(date)
         att_namelist = self.get_table_headers("attendance")
 
         att_list = {}
-        if section is not None: section_members = self.get_list_of_section_members(section)
+        if section != ".":
+            section_members = self.get_list_of_section_members(section)
         for i in range(2, len(att_result)):
-            if section is not None and att_namelist[i] not in section_members: continue
-            if mode == "noshow" and att_result[i] != None: continue
-            if mode == "nolatereason" and att_result[i] not in ("LATE", "NOSHOW"): continue
+            if section != "." and att_namelist[i] not in section_members: continue
+            if mode == "absent" and att_result[i] != None: continue
+            if mode == "reason" and att_result[i] not in ("late", "absent"): continue
             att_list[att_namelist[i]] = att_result[i]
-        return att_list
+        return str(att_list)
 
-    def get_list_of_section_members(self, section):
-        self.c.execute("SELECT name FROM details WHERE section LIKE '{}%'".format(section.upper()))
-        return list(map(lambda x: x[0], self.c.fetchall()))
+    
         
         
     ### QUERY TOOLS ###
@@ -308,7 +330,10 @@ class DB:
                 self.c.execute("SELECT * FROM {}".format(database))
                 print(next(zip(*self.c.description)))
                 for row in self.c: print(row)
+                print()
             print(self.aliases)
+            print("--------------------")
+        return ""
                        
 
 if __name__ == "__main__":
