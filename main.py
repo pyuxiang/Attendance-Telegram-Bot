@@ -1,11 +1,24 @@
+# to implement front-end data assertions
+# rather than letting it fail after passing to backend
+# ALL CONVERSION PUT IN FRONTEND!!!!
+# - to rename alias to nickname
+# - to remove chat_id references in methods
+# - to shift all result strings to be returned by backend
+
+# Needed for packaged modules if main.py run from parent directory
+# https://chrisyeh96.github.io/2017/08/08/definitive-guide-python-imports.html
+# https://stackoverflow.com/questions/714063/importing-modules-from-parent-folder/11158224#11158224
+import os, sys; sys.path.insert(0, os.path.join(os.getcwd(), "logic"))
+
 import constants
-import time
+from time import sleep # avoid 'time' conflict in namespace
 import requests
 import json
 import algorithm
 from inspect import signature
 import datetime
 import signal
+from assertions import *
 
 class SIGINT_handler():
     # https://stackoverflow.com/a/43787607
@@ -21,7 +34,7 @@ def main():
         if handler.SIGINT: break
         bot.get_updates()
         bot.process_updates()
-        time.sleep(0.5)
+        sleep(0.5)
     
     bot.terminate()
 
@@ -40,9 +53,11 @@ def tokenize(text):
 
 class TeleBot:
 
-    def __init__(self):
+    def __init__(self, failviolently=False):
+        from unit_tests import abstractDB
+        self.failviolently = failviolently
         self.token = constants.TOKEN
-        self.db = algorithm.DB()
+        self.db = abstractDB()
         self.url = "https://api.telegram.org/bot{}/".format(self.token)
         
         self.next_offset = None
@@ -64,7 +79,11 @@ class TeleBot:
 
     def send_message(self, chat_id, message):
         payload = {"text": message, "chat_id": chat_id}
+        if "`" in message: payload["parse_mode"] = "Markdown" # auto format-detection
         requests.get(self.url + "sendMessage", params=payload)
+
+    def retrieve_message(error_message, message):
+        return error_message if bool(error_message) else message
 
     def get_updates(self):
         payload = {"offset": self.next_offset} # to confirm receipt of message
@@ -85,108 +104,161 @@ class TeleBot:
             chat_id = result["message"]["chat"]["id"]
             text = result["message"]["text"]
             self.active_chats.add(chat_id)
-            
-            if text[0] != "/": continue # ignore non-bot-commands
-            args = tokenize(text)
-            cmd, args = args[0][1:], args[1:]
-            try:
-                assert hasattr(self, cmd), "/{} does not exist.".format(cmd)
-                params = signature(getattr(self, cmd)).parameters
-                skip_check = False
-                for param in params.values():
-                    if param.kind == param.VAR_POSITIONAL:
-                        skip_check = True
-                        break
-                if not skip_check: assert len(params)-1 == len(args), "Expected {} arguments instead of {} in /{}.".format(len(params)-1, len(args), cmd)
-            except AssertionError as e:
-                self.send_message(chat_id, str(e))
-                continue
-            getattr(self, cmd)(chat_id, *args)
 
+            try:
+                if text.lstrip()[0] != "/": continue # ignore non-bot-commands
+                args = tokenize(text)
+                cmd, args = args[0][1:], args[1:]
+                if "@" in cmd: cmd = cmd.split("@")[0] # ignore calls such as /new@bot
+                try:
+                    assert hasattr(self, cmd), "/{} does not exist.".format(cmd)
+                    response = getattr(self, cmd)(chat_id, *args)
+                    self.send_message(chat_id, response)
+                except AssertionError as e:
+                    self.send_message(chat_id, str(e))
+            except BaseException as e:
+                self.send_message(chat_id, "UNCAUGHT BUG!!")
+                if self.failviolently: raise e
+                print(e) # temporary scaffold to highlight exceptions during testing
+                    
     ### COMMANDS ###
 
     def help(self, chat_id):
-        pass
+        return 'Format: `/<cmd> <arguments>`\n'\
+             + 'For arguments with whitespace, enclose within "".\n'\
+             + 'For more help, type `/<cmd>` and follow the prompts.\n\n'\
+             + 'Possible cmds:\n`new`, `edit`, `delete`, `setdate`,\n'\
+             + '`add`, `present`, `late`, `absent(all)`, `report`'
             
     def hello(self, chat_id):
-        self.send_message(chat_id, "Hello World! :)")
+        return "Hello World! :)"
 
+    def prompt_qualifier(f):
+        def wrapper(*args, **kwargs):
+            if len(args) == 2:
+                return "Please specify a qualifier, e.g. /{} <qualifier>".format(f.__name__)
+            r = f(*args, **kwargs)
+            return r
+        return wrapper
+
+    @prompt_qualifier
     def new(self, chat_id, qualifier, *args):
-        if qualifier == "member": # ("member", "Full Name", "section", contact, status, *aliases)
-            self.db.add_member(*args)
-            self.send_message(chat_id, "Member {} added.".format(args[0]))
-        if qualifier == "alias": # ("alias", "Alias", *aliases)
-            self.db.add_alias(*args)
-            self.send_message(chat_id, "Aliases {} registered to {}.".format(args[1:], args[0]))
-        if qualifier == "practice": # ("practice", year, month, day, hour, min)
-            dts = algorithm.DTS(*args)
-            self.db.add_session(dts)
-            self.send_message(chat_id, "Practice on {} added.".format(dts.to_datestr()))
-                                                                    
+        
+        if qualifier == "member":
+            inputs = "member <fullname> <section> <contact> <status>[,*<alias>]"
+            assert_cmd("new", inputs, qualifier, *args)
+            assert_section(args[1])
+            assert_contact(args[2])
+            return self.db.add_member(*args)
+
+        if qualifier == "alias":
+            inputs = "alias <curralias> <alias>[,*<alias>]"
+            assert_cmd("new", inputs, qualifier, *args)
+            return self.db.add_alias(*args)
+        
+        if qualifier == "practice":
+            inputs = "practice <YYYY-MM-DD> <HH-MM> <sessiontype>"
+            assert_cmd("new", inputs, qualifier, *args)
+            assert_datetime(args[0], args[1])
+            return self.db.add_session(*args)
+        
+        return "No such qualifier '{}' available.\nUse: /new <member/alias/practice>".format(qualifier)
+                
+    @prompt_qualifier         
     def delete(self, chat_id, qualifier, *args):
-        if qualifier == "member": # ("member", "Full Name")
-            self.db.delete_member(*args)
-            self.send_message(chat_id, "Member {} deleted.".format(args[0]))
-        if qualifier == "alias": # ("alias", *aliases)
-            self.db.delete_alias(*args)
-            self.send_message(chat_id, "Aliases {} deleted.".format(args))
-        if qualifier == "practice": # ("practice", year, month, day[, hour, min])
-            dts = algorithm.DTS(*args)
-            self.db.delete_session(dts)
-            self.send_message(chat_id, "Practice on {} deleted.".format(dts.to_datestr()))
+                
+        if qualifier == "member":
+            inputs = "member <fullname>"
+            assert_cmd("delete", inputs, qualifier, *args)
+            return self.db.delete_member(*args)
+                
+        if qualifier == "alias":
+            inputs = "alias <alias>[,*<alias>]"
+            assert_cmd("delete", inputs, qualifier, *args)
+            return self.db.delete_alias(*args)
+                
+        if qualifier == "practice":
+            inputs = "practice <YYYY-MM-DD>"
+            assert_cmd("delete", inputs, qualifier, *args)
+            assert_date(*args)
+            return self.db.delete_session(*args)
 
+        return "No such qualifier '{}' available.\nUse: /new <member/alias/practice>".format(qualifier)
+
+    @prompt_qualifier
     def edit(self, chat_id, qualifier, *args):
-        if qualifier == "name": # ("name", "old name", "new name", *aliases)
-            self.db.update_name(*args)
-        if qualifier == "section": # ("section", "Full Name", "section")
-            self.db.update_section(*args)
+                
+        if qualifier == "name":
+            inputs = "name <oldname> <newname>[,*<alias>]"
+            assert_cmd("edit", inputs, qualifier, *args)
+            return self.db.update_name(*args)
+                
+        if qualifier == "section":
+            inputs = "section <fullname> <section>"
+            assert_cmd("edit", inputs, qualifier, *args)
+            assert_section(args[1])
+            return self.db.update_section(*args)
+            
         if qualifier == "contact": # ("contact", "Full Name", "contact")
-            self.db.update_contact(*args)
+            inputs = "contact <fullname> <contact>"
+            assert_cmd("edit", inputs, qualifier, *args)
+            assert_contact(args[1])
+            return self.db.update_contact(*args)
+            
         if qualifier == "status": # ("status", "Full Name", "status")
-            self.db.update_status(*args)
-        self.send_message(chat_id, "Member {} updated.".format(args[0]))
+            inputs = "status <fullname> <status>"
+            assert_cmd("edit", inputs, qualifier, *args)
+            return self.db.update_status(*args)
 
+        return "No such qualifier '{}' available.\nUse: /new <member/alias/practice>".format(qualifier)
 
-    ### FUNCTIONS BELOW ASSUME DATE SET ###
+                
+    ### FUNCTIONS BELOW ASSUME DATE HAS ALREADY BEEN SET VIA setdate ###
 
     def setdate(self, chat_id, *args):
-        dts = algorithm.DTS(*args)
-        self.cur_date = dts.to_dt()
-        self.send_message(chat_id, "Current date is now {}.".format(dts.to_datestr()))
-        
-    def update(self, chat_id, alias, text):
-        self.db.update_attendance(self.cur_date, alias, text)
-        self.send_message(chat_id, "Attendance for {} updated.".format(alias))
+        inputs = "<YYYY-MM-DD>"
+        assert_cmd("setdate", inputs, *args)
+        assert_date(args[0])
+        self.cur_date = args[0]
+        return "Current date is now set to {}.".format(args[0])
 
-    def add(self, chat_id, alias):
-        cur_dt = datetime.datetime.now()
-        target_dt = self.db.get_session_time(self.cur_date).to_dt()
-        self.db.set_reached(self.cur_date, alias, target_dt > cur_dt)
-        self.send_message(chat_id, "{} is {}.".format("late" if target > cur_dt else "ontime"))
+    def add(self, chat_id, *args):
+        inputs = "<alias>[,*<alias>]"
+        assert_cmd("add", inputs, *args)
+        if datetime.datetime.now() < self.db.parse_to_dt(self.cur_date):
+            return self.present(self, chat_id, *args)
+        return "\n".join(map(lambda s: self.late(self, chat_id, s), args))
 
-    def late(self, chat_id, alias, reason):
-        self.db.set_late(self.cur_date, alias, reason)
-        self.send_message(chat_id, "Late reason for {} updated.".format(alias))
+    def present(self, chat_id, *args): # TODO: need to accept only valid args and highlight invalid ones
+        inputs = "<alias>[,*<alias>]"
+        assert_cmd("present", inputs, *args)
+        return self.db.set_present(self.cur_date, *args)
 
-    def absent(self, chat_id, alias, reason):
-        self.db.set_absent(self.cur_date, alias, reason)
-        self.send_message(chat_id, "Noshow reason for {} updated.".format(alias))
+    def late(self, chat_id, *args):
+        inputs = "<alias>[,<reason>]"
+        assert_cmd("late", inputs, *args)              
+        return self.db.set_late(self.cur_date, *args)
 
-    def allabsent(self, chat_id):
-        self.db.set_all_absent(self.cur_date)
-        self.send_message(chat_id, "Remaining absense updated.".format(alias))
+    def absent(self, chat_id, *args):
+        inputs = "<alias>[,<reason>]"
+        assert_cmd("absent", inputs, *args)
+        return self.db.set_absent(self.cur_date, *args)
+
+    def absentall(self, chat_id):
+        return self.db.set_absent_all(self.cur_date)
         
     ### REPORT GENERATION ###
 
-    def report(self, chat_id, section=None, mode=None):
-        if section is None:
-            result = self.db.get_full_report(self.cur_date)
-        elif mode == "reason":
-            result = self.db.get_no_late_reason_report(self.cur_date, section)
-        elif mode == "noshow":
-            result = self.db.get_unfilled_report(self.cur_date, section)
-        self.send_message(chat_id, "Report:\n{}".format(result))
-
+    def report(self, chat_id, section=".", *args):
+        inputs = "<section=.>[,<mode=/reason/absent/section>]"
+        assert_cmd("report", inputs, section, *args)
+        if section != ".": assert_section(section)
+        if len(args) == 0: return self.db.get_full_report(self.cur_date, section)
+        mode = args[0]
+        if mode == "reason": return self.db.get_no_reason_report(self.cur_date, section)
+        if mode == "absent": return self.db.get_not_present_report(self.cur_date, section)
+        if mode == "section": return self.db.get_section_members(section)
+        return "No such mode '{}' available.\nUse: /report <section=.>[,<mode=/reason/absent/section>]".format(mode)
                 
 if __name__ == "__main__":
     main()

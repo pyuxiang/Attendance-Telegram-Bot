@@ -1,45 +1,30 @@
+# TODO: add functionality to activate/deactivate status of past members
+
 import sqlite3
 import json
 import bktree
 import os
 import datetime
 
-class DTS:
+class DT:
     def __init__(self, *args):
-        """ args == datetime obj / (Y, M, D) / (Y, M, D, HR, MINS) """
-        if len(args) == 1 and type(args[0]) is str:
-            # Parse from datestring
-            data = args[0]
-            assert "-" in data
-            self.y, self.m, self.d = list(map(int, data.split("-")))
+        """ args == datetime obj / 2018-08-20 19:47 """
+        if len(args) >= 1 and type(args[0]) is str:
+            # Parse datestring 2018-08-20
+            self.y, self.m, self.d = list(map(int, args[0].split("-")))
             self.h, self.min = 0, 0
-        elif len(args) == 1 and type(args[0]) is datetime.datetime:
+        if len(args) == 2 and type(args[1]) is str:
+            # Parse timestring 19:47
+            self.h, self.min = list(map(int, args[1].split(":")))
+        if len(args) == 1 and type(args[0]) is datetime.datetime:
             dt = args[0]
-            self.y = dt.year
-            self.m = dt.month
-            self.d = dt.day
-            self.h = dt.hour
-            self.min = dt.minute
-        elif len(args) == 3:
-            self.y, self.m, self.d = args
-            self.h, self.min = 0, 0
-        elif len(args) == 5:
-            self.y, self.m, self.d, self.h, self.min = args
-
-    def add_timestr(self, ts):
-        assert type(ts) is str
-        assert ":" in ts
-        self.h, self.min = list(map(int, ts.split(":")))
+            self.y, self.m, self.d, self.h, self.min = dt.year, dt.month, dt.day, dt.hour, dt.minute
             
-    def to_datestr(self): return "{:04d}-{:02d}-{:02d}".format(self.y, self.m, self.d)
-    def to_timestr(self): return "{:02d}:{:02d}".format(self.h, self.min)
+    def to_date(self): return "{:04d}-{:02d}-{:02d}".format(self.y, self.m, self.d)
+    def to_time(self): return "{:02d}:{:02d}".format(self.h, self.min)
     def to_dt(self): return datetime.datetime(self.y, self.m, self.d, self.h, self.min)
 
-
-### DEPRECATED: Adaptors for custom types
-# sqlite3.register_adapter(TS, lambda ts: "{}:{}".format(ts.h, ts.m)) # Adapter 
-# sqlite3.register_converter("ts", lambda s: TS(*list(map(int, s.split(b":"))))) # Converter
-
+# only usable for backend testing
 def confirm_delete():
     return input("WARNING! Deleting data... Type 'deleteme' to confirm: ") == "deleteme"
 
@@ -76,8 +61,6 @@ class DB:
                 json.dump({}, f)
 
     def hard_reset(self):
-        assert confirm_delete()
-        
         self.c.execute("DROP TABLE IF EXISTS details")
         self.c.execute("DROP TABLE IF EXISTS attendance")
         if os.path.isfile("aliases.json"):
@@ -89,22 +72,14 @@ class DB:
     ### EDITING TOOLS ###
         
     def add_member(self, name, section, contact, status, *aliases):
+        """ Add new member to database. """
         # Check duplicate names
         self.c.execute("SELECT * FROM details WHERE name=?", (name,))
         if self.c.fetchone() is not None:
-            print("Duplicate member found!")
-            return
-
-        # Insert details into both databases
-        assert section.upper() in ("S", "S1", "S2",
-                                   "A", "A1", "A2",
-                                   "T", "T1", "T2",
-                                   "B", "B1", "B2")
+            return "Duplicate member found!"
         self.c.execute(""" INSERT INTO details (name, section, contact, status)
                            VALUES (?,?,?,?) """, (name, section.upper(), contact, status))
         self.c.execute("ALTER TABLE attendance ADD COLUMN '{}' TEXT".format(name))
-        # @Problematic...
-        # self.c.execute("UPDATE attendance SET '{}'='NONE'".format(name)) # To avoid problems with ISNULL
 
         # Assign aliases to name -- including a default alias
         self.__create_new_alias(name, name)
@@ -124,12 +99,7 @@ class DB:
 
     def update_status(self, name, status): self.update_member(name, status=status)
     def update_contact(self, name, contact): self.update_member(name, contact=contact)
-    def update_section(self, name, section):
-        assert section.upper() in ("S", "S1", "S2",
-                                   "A", "A1", "A2",
-                                   "T", "T1", "T2",
-                                   "B", "B1", "B2")
-        self.update_member(name, section=section.upper())
+    def update_section(self, name, section): self.update_member(name, section=section.upper())
     def update_name(self, name, rename, *aliases):
         self.update_member(name, rename=rename)
         
@@ -201,7 +171,17 @@ class DB:
 
 
     ### PRACTICES ###
-    def add_session(self, dts):
+
+    def parse_date_as_dt(self, date):
+        return DT(date).to_dt()
+
+    def parse_dt_as_date(self, dt):
+        return DT(dt).to_date()
+
+    def get_session_dt(self, datestamp):
+        pass
+    
+    def add_session(self, datestamp, timestamp):
         # Works on assumption of only one practice session per day
         if dts.to_timestr() == "00:00": # default value
             print("Time must be specified!")
@@ -219,7 +199,7 @@ class DB:
         self.c.execute("DELETE FROM attendance WHERE date=?", (dts.to_datestr(),))
         self.commit()
 
-    def get_session_time(self, dts):
+    def get_session_time(self, dts): #datetime input
         self.c.execute("SELECT time FROM attendance WHERE data=?", (dts.to_date_str(),))
         time_ary = self.c.fetchone()
         if time_ary is None:
@@ -239,16 +219,19 @@ class DB:
         self.c.execute("UPDATE attendance SET '{}'='{}' WHERE date='{}'".format(name, text, dts.to_datestr()))
         self.commit()
 
-    def set_reached(self, dts, alias, late):
-        self.update_attendance(dts, alias, "X" if not late else "LATE")
+    def set_present(self, dts, *aliases):
+        for alias in aliases:
+            self.update_attendance(dts, alias, "present")
 
-    def set_late(self, dts, alias, reason):
-        self.update_attendance(dts, alias, "LATE: " + reason)
+    def set_late(self, dts, alias, reason=""):
+        text = "late" + ((": " + reason) if reason != "" else "")
+        self.update_attendance(dts, alias, text)
 
-    def set_absent(self, dts, alias, reason):
-        self.update_attendance(dts, alias, "NOSHOW: " + reason)
+    def set_absent(self, dts, alias, reason=""):
+        text = "absent" + ((": " + reason) if reason != "" else "")
+        self.update_attendance(dts, alias, text)
 
-    def set_all_absent(self, dts):
+    def set_absent_all(self, dts):
         for member in list(self.get_unfilled_report(dts).keys()):
             self.c.execute("UPDATE attendance SET '{}'='NOSHOW' WHERE date='{}'".format(member, dts.to_datestr()))
             # @Problematic
@@ -305,13 +288,6 @@ class DB:
         possible_names = set(self.aliases[c] for c in candidates)
         if len(possible_names) == 1: return possible_names.pop()
         return "" # Failed to match unique
-
-        ### DO NOT RESOLVE MATCHING CONFLICTS ###
-        ## Alias cannot be matched - resolve matching conflict and learn
-        # print("More than one {} found. Select one:\n{}"
-        #       .format(space, list(enumerate(candidates))))
-        # name = candidates[int(input())]
-        # self.new_alias(name, alias) # pair alias with name
     
 
     ### TOOLS ###
